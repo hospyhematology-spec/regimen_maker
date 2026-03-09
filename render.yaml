@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: regimen-maker
+    env: node
+    region: singapore # 日本から比較的近いリージョン
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+    disk:
+      name: regimen-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
