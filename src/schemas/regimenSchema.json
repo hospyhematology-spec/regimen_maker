@@ -1,0 +1,201 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RegimenMaster",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "templateVersion": {
+      "type": "string"
+    },
+    "sourceFiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SourceFile"
+      }
+    },
+    "basicInfo": {
+      "$ref": "#/definitions/BasicInfo"
+    },
+    "regimenBlocks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RegimenBlock"
+      }
+    },
+    "supplementaryOrders": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SupplementaryOrder"
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ReferenceItem"
+      }
+    },
+    "audit": {
+      "$ref": "#/definitions/AuditInfo"
+    }
+  },
+  "required": ["id", "templateVersion", "sourceFiles", "basicInfo", "regimenBlocks", "references"],
+  "definitions": {
+    "SourceFile": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["excel", "pdf", "word", "web", "text"] },
+        "url": { "type": ["string", "null"] }
+      },
+      "required": ["name", "type"]
+    },
+    "BasicInfo": {
+      "type": "object",
+      "properties": {
+        "applicationDate": { "type": ["string", "null"] },
+        "applicantDoctor": { "type": ["string", "null"] },
+        "departmentChief": { "type": ["string", "null"] },
+        "cancerType": { "type": ["string", "null"] },
+        "regimenName": { "type": ["string", "null"] },
+        "courseLengthDays": { "type": ["number", "null"] },
+        "totalCourses": { "type": ["string", "null"] },
+        "treatmentPurpose": {
+          "type": "object",
+          "properties": {
+            "selected": { "type": ["string", "null"], "enum": ["進行再発", "術前補助化学療法", "術後補助化学療法", "その他", null] },
+            "otherText": { "type": ["string", "null"] }
+          },
+          "required": ["selected"]
+        },
+        "category": { "type": ["string", "null"], "enum": ["入院", "外来", "入院・外来", null] },
+        "contraindications": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "eligibilityCriteria": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "stopCriteria": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "doseReductionCriteria": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "precautions": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "popupNotes": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } }
+      },
+      "required": ["treatmentPurpose", "category", "contraindications", "eligibilityCriteria", "stopCriteria", "doseReductionCriteria", "precautions", "popupNotes"]
+    },
+    "RichBulletItem": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "sourceTrace": { "type": "array", "items": { "$ref": "#/definitions/SourceTrace" } }
+      },
+      "required": ["text"]
+    },
+    "SourceTrace": {
+      "type": "object",
+      "properties": {
+        "sourceType": { "type": "string", "enum": ["excel", "pdf", "word", "web", "text"] },
+        "fileName": { "type": ["string", "null"] },
+        "sheetName": { "type": ["string", "null"] },
+        "cellRange": { "type": ["string", "null"] },
+        "page": { "type": ["number", "null"] },
+        "paragraphIndex": { "type": ["number", "null"] },
+        "url": { "type": ["string", "null"] },
+        "quotedText": { "type": "string" },
+        "aiInterpretation": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "required": ["sourceType", "quotedText", "aiInterpretation", "confidence"]
+    },
+    "RegimenBlock": {
+      "type": "object",
+      "properties": {
+        "regimenId": { "type": "string" },
+        "regimenLabel": { "type": "string" },
+        "applicableCourseRange": { "type": ["string", "null"] },
+        "sourceSheetName": { "type": ["string", "null"] },
+        "administrationSteps": { "type": "array", "items": { "$ref": "#/definitions/AdministrationStep" } },
+        "oralOrders": { "type": "array", "items": { "$ref": "#/definitions/SupplementaryOrder" } }
+      },
+      "required": ["regimenId", "regimenLabel", "administrationSteps"]
+    },
+    "AdministrationStep": {
+      "type": "object",
+      "properties": {
+        "stepNo": { "type": "number" },
+        "mainDrugs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "drugName": { "type": "string" },
+              "dose": { "type": ["string", "null"] },
+              "doseUnit": { "type": ["string", "null"] }
+            },
+            "required": ["drugName"]
+          }
+        },
+        "diluents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "volume": { "type": ["string", "null"] },
+              "unit": { "type": ["string", "null"] }
+            },
+            "required": ["name"]
+          }
+        },
+        "flushes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "volume": { "type": ["string", "null"] },
+              "unit": { "type": ["string", "null"] }
+            },
+            "required": ["name"]
+          }
+        },
+        "route": { "type": ["string", "null"] },
+        "infusionRate": { "type": ["string", "null"] },
+        "rateUnit": { "type": ["string", "null"] },
+        "administrationDays": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "sourceTrace": { "type": "array", "items": { "$ref": "#/definitions/SourceTrace" } }
+      },
+      "required": ["stepNo", "mainDrugs", "administrationDays"]
+    },
+    "SupplementaryOrder": {
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "instructionText": { "type": "string" },
+        "notes": { "type": "array", "items": { "$ref": "#/definitions/RichBulletItem" } },
+        "sourceTrace": { "type": "array", "items": { "$ref": "#/definitions/SourceTrace" } }
+      },
+      "required": ["orderId", "instructionText"]
+    },
+    "ReferenceItem": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "firstAuthor": { "type": ["string", "null"] },
+        "journal": { "type": ["string", "null"] },
+        "year": { "type": ["number", "null"] },
+        "doiOrUrl": { "type": ["string", "null"] },
+        "representative": { "type": "boolean" },
+        "sourceTrace": { "type": "array", "items": { "$ref": "#/definitions/SourceTrace" } }
+      },
+      "required": ["title", "representative"]
+    },
+    "AuditInfo": {
+      "type": "object",
+      "properties": {
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "operator": { "type": ["string", "null"] },
+        "changes": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["createdAt", "updatedAt"]
+    }
+  }
+}
