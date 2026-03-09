@@ -74,25 +74,25 @@ function SourceModal({ traces, onClose }: { traces: import("@/types/regimen").So
 
 // ─── History Modal ─────────────────────────────────────────────────
 function HistoryModal({ onClose, onSelect }: { onClose: () => void; onSelect: (r: Partial<RegimenMaster>) => void }) {
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<RegimenMaster[]>([]);
   const [loading, setLoading] = useState(true);
 
   React.useEffect(() => {
-    fetch("/api/regimens")
-      .then(res => res.json())
-      .then(data => {
-        setHistory(data.regimens || []);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    try {
+      const stored = localStorage.getItem("regimen_history");
+      if (stored) {
+        setHistory(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const handleSelect = async (id: string) => {
-    const res = await fetch(`/api/regimens/${id}`);
-    const data = await res.json();
-    if (data.success) {
-      onSelect(data.data);
-    }
+  const handleSelect = (id: string) => {
+    const data = history.find(h => h.id === id);
+    if (data) onSelect(data);
   };
 
   return (
@@ -111,8 +111,8 @@ function HistoryModal({ onClose, onSelect }: { onClose: () => void; onSelect: (r
             {history.map(h => (
               <div key={h.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.875rem", background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border-subtle)" }}>
                 <div>
-                  <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{h.regimen_name || "名称未設定"}</div>
-                  <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "0.2rem" }}>{h.cancer_type || "がん種不明"} | {new Date(h.created_at).toLocaleDateString()}</div>
+                  <div style={{ fontWeight: 600, color: "var(--text-primary)" }}>{h.basicInfo.regimenName || "名称未設定"}</div>
+                  <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: "0.2rem" }}>{h.basicInfo.cancerType || "がん種不明"} | {new Date(h.createdAt).toLocaleDateString()}</div>
                 </div>
                 <button className="btn btn-primary" onClick={() => handleSelect(h.id)} style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem" }}>
                   このレジメンを反映
@@ -135,7 +135,6 @@ function UploadPage() {
   const { setUploadedFiles, setStep, setRegimenMaster, setLoading, setError, isLoading, error } = useAppStore();
   const [dragging, setDragging] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
-  const [urlInput, setUrlInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const addFiles = (newFiles: File[]) => {
@@ -159,20 +158,114 @@ function UploadPage() {
     setError(null);
     setStep("extracting");
 
-    const formData = new FormData();
-    files.forEach((f) => formData.append("files", f));
-    if (urlInput.trim()) {
-      formData.append("url", urlInput.trim());
-    }
-
     try {
-      const res = await fetch("/api/parse", { method: "POST", body: formData });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "解析失敗");
+      // 動的インポートでフロント側のパーサーを読み込む
+      const { parseExcelFile } = await import("@/lib/parsers/excelParser");
+      const { parsePdfFile } = await import("@/lib/parsers/pdfParser");
+      const { parseWordFile, extractBulletItemsFromParagraphs } = await import("@/lib/parsers/wordParser");
+      const { extractBasicInfo } = await import("@/lib/extractors/basicInfoExtractor");
+      const { extractRegimenBlocks } = await import("@/lib/extractors/regimenExtractor");
+      const { extractReferencesFromText } = await import("@/lib/extractors/referenceExtractor");
+      const { v4: uuidv4 } = await import("uuid");
+
+      let combinedBasicInfo: Partial<RegimenMaster["basicInfo"]> = {};
+      let combinedRegimenBlocks: RegimenBlock[] = [];
+      let combinedTextBlocks: RichBulletItem[] = [];
+
+      for (const file of files) {
+        const buffer = await file.arrayBuffer();
+        const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+
+        if (ext === ".xlsx" || ext === ".xls") {
+          const sheetsData = await parseExcelFile(buffer);
+          // 最初のシートを基本情報シートと仮定して渡す
+          if (sheetsData.length > 0) {
+            const basicInfoPartial = extractBasicInfo(sheetsData[0], file.name);
+            combinedBasicInfo = { ...combinedBasicInfo, ...basicInfoPartial.value };
+          }
+
+          const blocks = extractRegimenBlocks(sheetsData, file.name);
+          combinedRegimenBlocks = [...combinedRegimenBlocks, ...blocks];
+
+          for (const sheet of sheetsData) {
+            const cells = Array.from(sheet.cells.values());
+            const textCells = cells.filter((c) => typeof c.value === "string" && c.value.length > 5);
+            const items = textCells.map((c) => ({
+              text: c.value,
+              sourceTrace: [{
+                sourceType: "excel" as const,
+                fileName: file.name,
+                sheetName: sheet.name,
+                cellRange: c.address,
+                quotedText: c.value.substring(0, 200),
+                aiInterpretation: "Excelセルからの抽出テキスト",
+                confidence: 0.8,
+              }],
+            }));
+            combinedTextBlocks = [...combinedTextBlocks, ...items];
+          }
+
+        } else if (ext === ".pdf") {
+          const result = await parsePdfFile(buffer, file.name);
+          const paragraphs = result.pages.map((p) => ({ text: p }));
+          combinedTextBlocks = [...combinedTextBlocks, ...paragraphs];
+
+        } else if (ext === ".docx" || ext === ".doc") {
+          const result = await parseWordFile(buffer, file.name);
+          const paragraphs = result.paragraphs.map((p) => ({ text: p }));
+          combinedTextBlocks = [...combinedTextBlocks, ...paragraphs];
+        }
+      }
+
+      let extractedReferences: import("@/types/regimen").ReferenceItem[] = [];
+      if (combinedTextBlocks.length > 0) {
+        const fileExt = files[0]?.name.toLowerCase();
+        const detectedType: import("@/types/regimen").FileType = 
+          fileExt?.endsWith(".pdf") ? "pdf" : 
+          fileExt?.endsWith(".docx") ? "word" : "excel";
+
+        extractedReferences = extractReferencesFromText(
+          combinedTextBlocks,
+          "テキスト解析",
+          detectedType
+        );
+      }
+
+      const regimenData: RegimenMaster = {
+        id: uuidv4(),
+        templateVersion: "1.0",
+        basicInfo: {
+          applicationDate: combinedBasicInfo.applicationDate ?? null,
+          applicantDoctor: combinedBasicInfo.applicantDoctor ?? null,
+          departmentChief: combinedBasicInfo.departmentChief ?? null,
+          cancerType: combinedBasicInfo.cancerType ?? null,
+          regimenName: combinedBasicInfo.regimenName ?? null,
+          courseLengthDays: combinedBasicInfo.courseLengthDays ?? null,
+          totalCourses: combinedBasicInfo.totalCourses ?? null,
+          treatmentPurpose: combinedBasicInfo.treatmentPurpose ?? { selected: null },
+          category: combinedBasicInfo.category ?? null,
+          contraindications: combinedBasicInfo.contraindications ?? [],
+          eligibilityCriteria: combinedBasicInfo.eligibilityCriteria ?? [],
+          stopCriteria: combinedBasicInfo.stopCriteria ?? [],
+          doseReductionCriteria: combinedBasicInfo.doseReductionCriteria ?? [],
+          precautions: combinedBasicInfo.precautions ?? [],
+          popupNotes: combinedBasicInfo.popupNotes ?? [],
+        },
+        regimenBlocks: combinedRegimenBlocks,
+        references: extractedReferences,
+        sourceFiles: files.map(f => ({ 
+          name: f.name, 
+          type: (f.name.endsWith(".pdf") ? "pdf" : f.name.endsWith(".docx") ? "word" : "excel") as import("@/types/regimen").FileType, 
+          url: null 
+        })),
+        createdAt: new Date().toISOString(),
+      };
+
       setUploadedFiles(files);
-      setRegimenMaster(json.data as RegimenMaster);
+      setRegimenMaster(regimenData);
       setStep("review-basic");
     } catch (err) {
+      console.error(err);
       setError(String(err));
       setStep("upload");
     } finally {
@@ -225,21 +318,11 @@ function UploadPage() {
         />
       </div>
 
-      <div className="card fade-in" style={{ marginTop: "1.5rem" }}>
-        <div className="section-title" style={{ marginBottom: "1rem" }}>Webページから読み込む（オプション）</div>
-        <input
-          className="form-input"
-          placeholder="https://... レジメン情報が掲載されたページのURLを入力"
-          value={urlInput}
-          onChange={(e) => setUrlInput(e.target.value)}
-        />
-      </div>
-
-      {(files.length > 0 || urlInput.trim()) && (
+      {files.length > 0 && (
         <div className="card fade-in" style={{ marginTop: "1.5rem" }}>
           <div className="section-header">
             <div className="section-title">選択済みソース</div>
-            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{files.length + (urlInput.trim() ? 1 : 0)} 件</span>
+            <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{files.length} 件</span>
           </div>
           {files.map((f) => (
             <div key={f.name} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0", borderBottom: "1px solid var(--border-subtle)" }}>
@@ -251,16 +334,6 @@ function UploadPage() {
               <button className="btn btn-danger" style={{ padding: "0.2rem 0.6rem", fontSize: "0.75rem" }} onClick={() => removeFile(f.name)}>削除</button>
             </div>
           ))}
-          {urlInput.trim() && (
-            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0", borderBottom: "1px solid var(--border-subtle)" }}>
-              <span style={{ fontSize: "1.25rem" }}>🌐</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: "0.875rem", color: "var(--text-primary)", wordBreak: "break-all" }}>{urlInput.trim()}</div>
-                <div style={{ fontSize: "0.72rem", color: "var(--text-muted)" }}>Web URL</div>
-              </div>
-              <button className="btn btn-danger" style={{ padding: "0.2rem 0.6rem", fontSize: "0.75rem" }} onClick={() => setUrlInput("")}>削除</button>
-            </div>
-          )}
           {error && <div style={{ color: "var(--danger)", fontSize: "0.85rem", marginTop: "1rem", padding: "0.75rem", background: "rgba(239,68,68,0.08)", borderRadius: 8 }}>⚠️ {error}</div>}
           <div style={{ marginTop: "1.25rem", display: "flex", justifyContent: "flex-end" }}>
             <button className="btn btn-primary" onClick={handleParse} disabled={isLoading}>
@@ -622,17 +695,58 @@ function ExportPage() {
     if (!templateFile) return;
     setIsExporting(true);
     setError(null);
-    const formData = new FormData();
-    formData.append("template", templateFile);
-    formData.append("data", JSON.stringify(regimenMaster));
 
     try {
-      const res = await fetch("/api/export", { method: "POST", body: formData });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "エクスポート失敗");
-      setDownloadLinks(json.files);
+      // 履歴をローカルストレージに保存
+      try {
+        const stored = localStorage.getItem("regimen_history");
+        const history: RegimenMaster[] = stored ? JSON.parse(stored) : [];
+        const newHistory = [regimenMaster, ...history.filter(h => h.id !== regimenMaster.id)].slice(0, 50);
+        localStorage.setItem("regimen_history", JSON.stringify(newHistory));
+      } catch (e) {
+        console.warn("ローカル履歴の保存に失敗:", e);
+      }
+
+      // JSONとAuditLogのBlob生成
+      const jsonBlob = new Blob([JSON.stringify(regimenMaster, null, 2)], { type: "application/json" });
+      const jsonUrl = URL.createObjectURL(jsonBlob);
+
+      const auditLog = {
+        action: "REGIMEN_FINALIZED",
+        timestamp: new Date().toISOString(),
+        regimenId: regimenMaster.id,
+        summary: `${regimenMaster.basicInfo.regimenName} (Blocks: ${regimenMaster.regimenBlocks.length}, Validation: N/A)`,
+      };
+      const auditBlob = new Blob([JSON.stringify(auditLog, null, 2)], { type: "application/json" });
+      const auditUrl = URL.createObjectURL(auditBlob);
+
+      // 動的インポートでExcelJSとエクスポート処理を呼び出す
+      const ExcelJS = (await import("exceljs")).default;
+      
+      const buffer = await templateFile.arrayBuffer();
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+
+      // Template writing logic (simplified for browser environment)
+      const sheet = workbook.worksheets[0];
+      if (sheet) {
+        if (regimenMaster.basicInfo.regimenName) sheet.getCell("B2").value = regimenMaster.basicInfo.regimenName;
+        if (regimenMaster.basicInfo.cancerType) sheet.getCell("B3").value = regimenMaster.basicInfo.cancerType;
+        if (regimenMaster.basicInfo.treatmentPurpose?.selected) sheet.getCell("B4").value = regimenMaster.basicInfo.treatmentPurpose.selected;
+        if (regimenMaster.basicInfo.category) sheet.getCell("B5").value = regimenMaster.basicInfo.category;
+        sheet.getCell("B6").value = `Total ${regimenMaster.regimenBlocks.length} blocks`;
+        sheet.getCell("B7").value = "Generated by browser (Static Export)";
+      }
+
+      // BufferをBlobに変換してダウンロードリンク生成
+      const outBuffer = await workbook.xlsx.writeBuffer();
+      const excelBlob = new Blob([outBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const excelUrl = URL.createObjectURL(excelBlob);
+
+      setDownloadLinks({ excel: excelUrl, json: jsonUrl, auditLog: auditUrl });
     } catch (e) {
-      setError(String(e));
+      console.error(e);
+      setError("エクスポート中にエラーが発生しました");
     } finally {
       setIsExporting(false);
     }

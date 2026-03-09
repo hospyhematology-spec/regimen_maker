@@ -1,4 +1,7 @@
-import fs from "fs";
+import * as pdfjsLib from "pdfjs-dist";
+// 必要なワーカーの設定（ブラウザ環境必須）
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+
 import type { SourceTrace, RichBulletItem } from "@/types/regimen";
 
 interface PdfExtractResult {
@@ -8,24 +11,23 @@ interface PdfExtractResult {
 }
 
 /**
- * PDFファイルからテキストを抽出する
+ * PDFファイルからテキストを抽出する（ブラウザ互換）
  */
-export async function parsePdfFile(filePath: string): Promise<PdfExtractResult> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const pdfParse = require("pdf-parse");
-  const dataBuffer = fs.readFileSync(filePath);
-  const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+export async function parsePdfFile(buffer: ArrayBuffer, fileName: string): Promise<PdfExtractResult> {
+  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+  const numPages = pdf.numPages;
 
-  const data = await pdfParse(dataBuffer);
-  const fullText: string = data.text;
-  const numPages: number = data.numpages;
-
-  // ページ単位でテキストを分割（近似）
-  const lines = fullText.split("\n");
-  const linesPerPage = Math.ceil(lines.length / numPages);
   const pages: string[] = [];
-  for (let i = 0; i < numPages; i++) {
-    pages.push(lines.slice(i * linesPerPage, (i + 1) * linesPerPage).join("\n"));
+  let fullText = "";
+
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const strings = content.items.map((item: any) => item.str);
+    const pageText = strings.join(" ");
+    pages.push(pageText);
+    fullText += pageText + "\n";
   }
 
   const sourceTraces: SourceTrace[] = pages.map((pageText, i) => ({

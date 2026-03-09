@@ -1,4 +1,3 @@
-import fs from "fs";
 import mammoth from "mammoth";
 import type { SourceTrace, RichBulletItem } from "@/types/regimen";
 
@@ -11,11 +10,9 @@ interface WordExtractResult {
 /**
  * Word (.docx) ファイルからテキストを抽出する
  */
-export async function parseWordFile(filePath: string): Promise<WordExtractResult> {
-  const buffer = fs.readFileSync(filePath);
-  const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
-
-  const result = await mammoth.extractRawText({ buffer });
+export async function parseWordFile(buffer: ArrayBuffer, fileName: string): Promise<WordExtractResult> {
+  // mammoth は Buffer を期待するため、ArrayBuffer から Buffer に変換（ブラウザビルド環境での互換対応）
+  const result = await mammoth.extractRawText({ arrayBuffer: buffer });
   const text = result.value;
   const paragraphs = text.split("\n").map((p) => p.trim()).filter(Boolean);
 

@@ -1,5 +1,4 @@
 import ExcelJS from "exceljs";
-import path from "path";
 import type {
   SourceTrace,
   RichBulletItem,
@@ -25,9 +24,9 @@ export interface SheetData {
 /**
  * Excelファイルのすべてのシートを読み込み、結合セル情報を保持した中間表現を返す
  */
-export async function parseExcelFile(filePath: string): Promise<SheetData[]> {
+export async function parseExcelFile(buffer: ArrayBuffer): Promise<SheetData[]> {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(filePath);
+  await workbook.xlsx.load(buffer);
 
   const sheets: SheetData[] = [];
 

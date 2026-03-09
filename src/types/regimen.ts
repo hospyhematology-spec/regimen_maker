@@ -162,6 +162,8 @@ export interface RegimenMaster {
   supplementaryOrders?: SupplementaryOrder[];
   references: ReferenceItem[];
   audit?: AuditInfo;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 // -------------------------------------------------------
