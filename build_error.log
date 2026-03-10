@@ -5,56 +5,20 @@
 笆ｲ Next.js 16.1.6 (Turbopack)
 
   Creating an optimized production build ...
-笨・Compiled successfully in 3.3s
+笨・Compiled successfully in 3.9s
   Running TypeScript ...
-node.exe : Failed to co
-mpile.
-発生場所 行:1 文字:1
-+ & "C:\Program Files\n
-odejs/node.exe" "C:\Pro
-gram Files\nodejs/node_
-mo ...
-+ ~~~~~~~~~~~~~~~~~~~~~
-~~~~~~~~~~~~~~~~~~~~~~~
-~~~~~~~~~~~~~~~~~~~~~~~
-~~
-    + CategoryInfo     
-         : NotSpecifi  
-  ed: (Failed to com   
- pile.:String) [],     
-RemoteException
-    + FullyQualifiedEr 
-   rorId : NativeComm  
-  andError
- 
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/4) ...
+  Generating static pages using 7 workers (1/4) 
+  Generating static pages using 7 workers (2/4) 
+  Generating static pages using 7 workers (3/4) 
+笨・Generating static pages using 7 workers (4/4) in 361.4ms
+  Finalizing page optimization ...
 
-./src/app/page.tsx:225:
-11
-Type error: Argument of
- type 'string' is not a
-ssignable to parameter 
-of type 'FileType'.
+Route (app)
+笏・笳・/
+笏・笳・/_not-found
 
-[0m [90m 223 |[39m  
-         combinedTextBl
-ocks[33m,[39m
- [90m 224 |[39m      
-     [32m"繝・く繧ｹ繝郁ｧ｣譫・
-[39m[33m,[39m
-[31m[1m>[22m[39m[9
-0m 225 |[39m          
- files[[35m0[39m][33
-m?[39m[33m.[39mname 
-[33m?[39m[33m?[39m 
-[32m"source"[39m
- [90m     |[39m      
-     [31m[1m^[22m[3
-9m
- [90m 226 |[39m      
-   )[33m;[39m
- [90m 227 |[39m      
- }
- [90m 228 |[39m[0m
-Next.js build worker ex
-ited with code: 1 and s
-ignal: null
+
+笳・ (Static)  prerendered as static content
+

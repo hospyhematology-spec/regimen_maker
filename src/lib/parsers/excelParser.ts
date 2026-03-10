@@ -190,7 +190,9 @@ export function extractBulletItems(
 
 /**
  * 投与方法シートからAdministrationStep[]を抽出する
- * A列の整数だけでなく、薬剤名や割ーな行パターンも認識する
+/**
+ * 投与方法シートからAdministrationStep[]を抽出する
+ * A列の整数を区切り点として使用する。なければ全行を1ステップとして扱う。
  */
 export function extractAdministrationSteps(
   sheetData: SheetData,
@@ -201,49 +203,55 @@ export function extractAdministrationSteps(
   let currentStepNo: number | null = null;
   let currentRows: CellInfo[][] = [];
 
-  // ヘッダー行を檢出する（最初の薬剤名や投与方法のある行の先行最大行）
-  const headerLabels = /薬剤名|芬剤|刹|投与|途|amount|dose|drug|route|day|基準|剥|負/i;
-  let headerRowIndex = 0;
-  for (let i = 0; i < Math.min(sheetData.rows.length, 10); i++) {
+  // ヘッダー行検索（「薬剤」「投与」「日」が行に含まれる最初の行）
+  const headerKeywords = /薬剤|投与|ルート|route|dose|drug|day|単位/i;
+  let skipUntil = 0;
+  for (let i = 0; i < Math.min(sheetData.rows.length, 15); i++) {
     const rowStr = sheetData.rows[i].map((c: CellInfo) => c.value?.trim() ?? "").join(" ");
-    if (headerLabels.test(rowStr)) {
-      headerRowIndex = i;
+    if (headerKeywords.test(rowStr)) {
+      skipUntil = i + 1; // ヘッダー行を含めてスキップ
       break;
     }
   }
 
-  // データ行（ヘッダー行の次から）を処理
-  for (let ri = headerRowIndex + 1; ri < sheetData.rows.length; ri++) {
+  // データ行を処理
+  for (let ri = 0; ri < sheetData.rows.length; ri++) {
     const row = sheetData.rows[ri];
     const firstCell = row[stepColIndex]?.value?.trim() ?? "";
-    const stepNo = parseInt(firstCell, 10);
+    const stepNoMatch = /^(\d+)$/.exec(firstCell);
 
-    // A列に整数がある場合はステップ分割点
-    if (!isNaN(stepNo) && firstCell === String(stepNo)) {
+    // ヘッダー行はスキップ（ただし既に A列整数ステップに入った後はスキップしない）
+    if (ri < skipUntil && currentStepNo === null) continue;
+
+    if (stepNoMatch) {
+      // A列に純整数→ステップ区切り
       if (currentStepNo !== null && currentRows.length > 0) {
-        steps.push(buildStep(currentStepNo, currentRows, fileName, sheetData.name));
+        const step = buildStep(currentStepNo, currentRows, fileName, sheetData.name);
+        if (step.mainDrugs.length > 0 || step.diluents.length > 0) {
+          steps.push(step);
+        }
       }
-      currentStepNo = stepNo;
+      currentStepNo = parseInt(stepNoMatch[1], 10);
       currentRows = [row];
     } else if (currentStepNo !== null) {
       currentRows.push(row);
-    } else {
-      // A列に整数がない場合、行全体に薬剤名らしき文字列があればステップとして扱う
-      const rowContent = row.map((c: CellInfo) => c.value?.trim() ?? "").filter(Boolean);
-      if (rowContent.length >= 2 && rowContent.some(v => !/^\.?\d+$/.test(v) && v.length > 1)) {
-        if (currentStepNo === null) {
-          currentStepNo = steps.length + 1;
-          currentRows = [row];
-        } else {
-          currentRows.push(row);
-        }
-      }
     }
   }
 
   // 最後のステップを確定
   if (currentStepNo !== null && currentRows.length > 0) {
-    steps.push(buildStep(currentStepNo, currentRows, fileName, sheetData.name));
+    const step = buildStep(currentStepNo, currentRows, fileName, sheetData.name);
+    if (step.mainDrugs.length > 0 || step.diluents.length > 0) {
+      steps.push(step);
+    }
+  }
+
+  // ステップが得られなかった場合、シート全体を1ステップとして解析
+  if (steps.length === 0 && sheetData.rows.length > 0) {
+    const step = buildStep(1, sheetData.rows, fileName, sheetData.name);
+    if (step.mainDrugs.length > 0 || step.diluents.length > 0) {
+      steps.push(step);
+    }
   }
 
   return steps;
@@ -263,35 +271,92 @@ function buildStep(
   let route: string | null = null;
   let infusionRate: string | null = null;
 
-  for (const row of rows) {
-    const category = row[1]?.value?.trim() ?? "";
-    const name = row[2]?.value?.trim() ?? "";
-    const dose = row[3]?.value?.trim() ?? "";
-    const unit = row[4]?.value?.trim() ?? "";
-    const noteText = row[5]?.value?.trim() ?? "";
-    const routeVal = row[6]?.value?.trim() ?? "";
-    const rateVal = row[7]?.value?.trim() ?? "";
-    const dayVal = row[8]?.value?.trim() ?? "";
+  // 用量・単位のパターン
+  const dosePattern = /^[\d.]+$/;
+  const unitPattern = /mg|g|mL|μg|mcg|IU|U|unit|万/i;
+  const routePattern = /静注|点滴|経口|皮下|筋注|静脈|IV|SC|PO|IM|iv/i;
+  const dayPattern = /^Day\s*\d+|^\d+日目|^day/i;
+  const flushPattern = /フラッシュ|生食|生理食塩|NS\b/i;
+  const diluentPattern = /溶解|希釈|補液|前投薬|前処置|制吐|生理食塩|ブドウ糖|dextrose|saline/i;
+  // 薬剤名らしさの判定（カタカナ含む、英数字多め、2文字以上）
+  const drugNameLike = (s: string): boolean => {
+    if (!s || s.length < 2) return false;
+    if (/^\d+$/.test(s)) return false; // 純数値はNG
+    if (dosePattern.test(s)) return false;
+    if (dayPattern.test(s)) return false;
+    if (routePattern.test(s)) return false;
+    if (unitPattern.test(s) && s.length < 4) return false;
+    // カタカナ or 英字含む
+    return /[ァ-ヶA-Za-z]/.test(s);
+  };
 
-    if (name) {
-      const cat = category.toLowerCase();
-      // 薬剤名があればカテゴリにおらず何らかの項目として登録する
-      if (cat.includes("主") || cat.includes("抗がん") || cat.includes("抗cancer") || cat === "" || cat.includes("薬")) {
-        // 主剤として登録
-        mainDrugs.push({ drugName: name, dose: dose || null, doseUnit: unit || null });
-      } else if (cat.includes("溶") || cat.includes("補液") || cat.includes("前") || cat.includes("溶解") || cat.includes("希釈") || cat.includes("生理")) {
-        diluents.push({ name, volume: dose || null, unit: unit || null });
-      } else if (cat.includes("フラッシュ")) {
-        flushes.push({ name, volume: dose || null, unit: unit || null });
-      } else {
-        // 分類不明は主剤扇いとして登録
-        mainDrugs.push({ drugName: name, dose: dose || null, doseUnit: unit || null });
+  for (const row of rows) {
+    const cells = row.map((c: CellInfo) => c.value?.trim() ?? "").filter(Boolean);
+    if (cells.length === 0) continue;
+
+    // 固定列インデックスで試みる方法 ─ category列が存在する場合
+    const colB = row[1]?.value?.trim() ?? "";
+    const colC = row[2]?.value?.trim() ?? "";
+    const colD = row[3]?.value?.trim() ?? "";
+    const colE = row[4]?.value?.trim() ?? "";
+
+    // Day値を探す
+    for (const cell of cells) {
+      if (dayPattern.test(cell) && !administrationDays.includes(cell)) {
+        administrationDays.push(cell);
       }
     }
-    if (routeVal && !route) route = routeVal;
-    if (rateVal && !infusionRate) infusionRate = rateVal;
-    if (dayVal && !administrationDays.includes(dayVal)) administrationDays.push(dayVal);
-    if (noteText) notes.push({ text: noteText });
+    // 投与経路を探す
+    for (const cell of cells) {
+      if (routePattern.test(cell) && !route) route = cell;
+    }
+
+    // 列B にカテゴリ、列C に薬剤名というパターンを試みる
+    if (colC && drugNameLike(colC)) {
+      const dose = colD && dosePattern.test(colD) ? colD : null;
+      const unit = colE && unitPattern.test(colE) ? colE : null;
+      const cat = colB.toLowerCase();
+
+      if (diluentPattern.test(colB) || diluentPattern.test(colC)) {
+        diluents.push({ name: colC, volume: dose, unit });
+      } else if (flushPattern.test(colC)) {
+        flushes.push({ name: colC, volume: dose, unit });
+      } else {
+        mainDrugs.push({ drugName: colC, dose, doseUnit: unit });
+      }
+      void cat;
+    } else {
+      // 薬剤名っぽいセルを行内からすべて探す（フォールバック）
+      for (let ci = 0; ci < row.length; ci++) {
+        const val = row[ci]?.value?.trim() ?? "";
+        if (!drugNameLike(val)) continue;
+        // 隣のセルから用量と単位を試みる
+        const nextVal = row[ci + 1]?.value?.trim() ?? "";
+        const nextNextVal = row[ci + 2]?.value?.trim() ?? "";
+        const dose = dosePattern.test(nextVal) ? nextVal : null;
+        const unit = unitPattern.test(nextNextVal) ? nextNextVal : (unitPattern.test(nextVal) ? nextVal : null);
+
+        if (diluentPattern.test(val)) {
+          diluents.push({ name: val, volume: dose, unit });
+        } else if (flushPattern.test(val)) {
+          flushes.push({ name: val, volume: dose, unit });
+        } else {
+          // 重複チェック
+          if (!mainDrugs.some(d => d.drugName === val)) {
+            mainDrugs.push({ drugName: val, dose, doseUnit: unit });
+          }
+        }
+        break; // 1行1薬剤として扱う
+      }
+    }
+
+    // 速度の検出
+    const rateMatch = cells.find(c => /\d+\s*(mL\/h|ml\/h|mg\/h)/.test(c));
+    if (rateMatch && !infusionRate) infusionRate = rateMatch;
+
+    // ノート（数字・薬剤名・単位以外の長めのテキスト）
+    const noteCell = cells.find(c => c.length > 10 && !drugNameLike(c) && !dosePattern.test(c) && !routePattern.test(c));
+    if (noteCell) notes.push({ text: noteCell });
   }
 
   const firstRow = rows[0];
@@ -300,7 +365,7 @@ function buildStep(
     fileName,
     sheetName,
     cellRange: firstRow?.[0]?.address,
-    quotedText: rows.map((r) => r.map((c) => c.value).join("\t")).join("\n"),
+    quotedText: rows.slice(0, 3).map((r) => r.map((c) => c.value).join("\t")).join("\n"),
     aiInterpretation: `ステップ${stepNo}の投与情報`,
     confidence: 0.8,
   };
@@ -318,3 +383,4 @@ function buildStep(
     sourceTrace: [trace],
   };
 }
+
