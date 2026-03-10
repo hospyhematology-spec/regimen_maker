@@ -112,13 +112,8 @@ export function extractBasicInfo(
     }
   }
 
-  // 複数シートの場合、すべてのシートから箇条書き抽出を試みる
-  const contraindications = extractBulletItemsFromRows(sheet, fileName, "禁忌");
-  const eligibilityCriteria = extractBulletItemsFromRows(sheet, fileName, "投与基準|適応基準|対象患者");
-  const stopCriteria = extractBulletItemsFromRows(sheet, fileName, "中止基準|投与中止");
-  const doseReductionCriteria = extractBulletItemsFromRows(sheet, fileName, "減量基準|用量調整");
-  const precautions = extractBulletItemsFromRows(sheet, fileName, "注意事項|注意点|管理");
-  const popupNotes = extractBulletItemsFromRows(sheet, fileName, "ポップアップ|コメント|注記");
+  // 2パス方式で全セクションを一度に抽出（振り分けの精度が高い）
+  const bulletSections = extractAllBulletSections(sheet, fileName);
 
   const basicInfo: Partial<BasicInfo> = {
     applicationDate,
@@ -130,82 +125,104 @@ export function extractBasicInfo(
     totalCourses,
     treatmentPurpose,
     category,
-    contraindications,
-    eligibilityCriteria,
-    stopCriteria,
-    doseReductionCriteria,
-    precautions,
-    popupNotes,
+    contraindications: bulletSections.contraindications ?? [],
+    eligibilityCriteria: bulletSections.eligibilityCriteria ?? [],
+    stopCriteria: bulletSections.stopCriteria ?? [],
+    doseReductionCriteria: bulletSections.doseReductionCriteria ?? [],
+    precautions: bulletSections.precautions ?? [],
+    popupNotes: bulletSections.popupNotes ?? [],
   };
 
   return { value: basicInfo, sourceTraces };
 }
 
 /**
- * シートの行から特定ラベルに続く箇条書き領域を抽出する
- * A列だけでなく全セルをスキャンしてラベルを検索する
+ * シートの全行を走査してセクションマップを構築し、
+ * 指定ラベルに対応する行範囲だけを返すことで、
+ * 振り分けの精度を大幅に向上させる（2パス方式）
  */
-function extractBulletItemsFromRows(
+
+interface SectionEntry {
+  keyword: string;
+  rowIndex: number;
+}
+
+// 認識対象の全セクションラベルと対応キー
+const SECTION_DEFS: { key: string; patterns: RegExp; keywords: string[] }[] = [
+  { key: "contraindications",     patterns: /禁忌/,                         keywords: ["禁忌"] },
+  { key: "eligibilityCriteria",   patterns: /投与基準|適応基準|対象患者|適応症例/, keywords: ["投与基準", "適応基準", "対象患者", "適応症例"] },
+  { key: "stopCriteria",          patterns: /中止基準|投与中止|休薬基準/,     keywords: ["中止基準", "投与中止", "休薬基準"] },
+  { key: "doseReductionCriteria", patterns: /減量基準|用量調整|用量変更/,     keywords: ["減量基準", "用量調整", "用量変更"] },
+  { key: "precautions",           patterns: /注意事項|注意点|副作用対策|管理方法/, keywords: ["注意事項", "注意点", "副作用対策", "管理方法"] },
+  { key: "popupNotes",            patterns: /ポップアップ|コメント|注記|備考/, keywords: ["ポップアップ", "コメント", "注記", "備考"] },
+];
+
+function extractAllBulletSections(
   sheet: SheetData,
-  fileName: string,
-  labelKeyword: string
-): RichBulletItem[] {
-  const items: RichBulletItem[] = [];
-  let capturing = false;
-  const regex = new RegExp(labelKeyword);
+  fileName: string
+): Record<string, RichBulletItem[]> {
+  const result: Record<string, RichBulletItem[]> = {};
+  SECTION_DEFS.forEach(d => { result[d.key] = []; });
 
-  for (const row of sheet.rows) {
-    // 行のすべてのセルを連結してラベル検索
+  // パス1: 各行を走査して各セクションの開始行インデックスを記録
+  const sectionBoundaries: SectionEntry[] = [];
+  for (let ri = 0; ri < sheet.rows.length; ri++) {
+    const row = sheet.rows[ri];
     const rowText = row.map((c: { value: string }) => c.value?.trim() ?? "").join(" ");
-    const firstCell = row[0]?.value?.trim() ?? "";
-
-    // ラベルが行内のどこかに含まれていればキャプチャ開始
-    if (regex.test(rowText)) {
-      capturing = true;
-      // ラベル行自体にもデータがある場合は取り込む（右隣セルの内容）
-      const dataInLabelRow = row.slice(1).map((c: { value: string }) => c.value?.trim() ?? "").filter(Boolean).join(" ");
-      if (dataInLabelRow) {
-        items.push({
-          text: dataInLabelRow,
-          sourceTrace: [{
-            sourceType: "excel",
-            fileName,
-            sheetName: sheet.name,
-            cellRange: row[0]?.address,
-            quotedText: dataInLabelRow,
-            aiInterpretation: `${labelKeyword}の項目`,
-            confidence: 0.8,
-          }],
-        });
-      }
-      continue;
-    }
-
-    // 別ラベル行（先頭が空白なしで始まりA列に内容あり）に到達したら停止
-    if (capturing && firstCell && /^[^\s・　]/.test(firstCell) && !/^\d/.test(firstCell)) {
-      // ただし次のラベル行かどうかをある程度判断する（短い行ラベルと思われる場合のみ停止）
-      if (firstCell.length < 15 && !firstCell.includes("。")) {
-        capturing = false;
-      }
-    }
-
-    if (capturing) {
-      const text = row.map((c: { value: string }) => c.value?.trim() ?? "").filter(Boolean).join(" ").trim();
-      if (text) {
-        items.push({
-          text,
-          sourceTrace: [{
-            sourceType: "excel",
-            fileName,
-            sheetName: sheet.name,
-            cellRange: row[0]?.address,
-            quotedText: text,
-            aiInterpretation: `${labelKeyword}の項目`,
-            confidence: 0.75,
-          }],
-        });
+    for (const def of SECTION_DEFS) {
+      if (def.patterns.test(rowText)) {
+        sectionBoundaries.push({ keyword: def.key, rowIndex: ri });
+        break; // 1行に複数ラベルがある場合は最初のみ
       }
     }
   }
-  return items;
+
+  if (sectionBoundaries.length === 0) return result;
+
+  // パス2: 各セクションの行範囲からデータを抽出
+  for (let si = 0; si < sectionBoundaries.length; si++) {
+    const { keyword, rowIndex } = sectionBoundaries[si];
+    const nextRowIndex = sectionBoundaries[si + 1]?.rowIndex ?? sheet.rows.length;
+
+    const items: RichBulletItem[] = [];
+    // ラベル行自体（rowIndex）は飛ばして次の行から取り込む
+    // ただしラベル行の右側にデータがある場合は取り込む
+    const labelRow = sheet.rows[rowIndex];
+    const labelRowData = labelRow?.slice(1)
+      .map((c: { value: string }) => c.value?.trim() ?? "")
+      .filter(Boolean).join(" ") ?? "";
+    if (labelRowData) {
+      items.push({
+        text: labelRowData,
+        sourceTrace: [{ sourceType: "excel", fileName, sheetName: sheet.name, cellRange: labelRow[0]?.address, quotedText: labelRowData, aiInterpretation: `${keyword}の項目`, confidence: 0.85 }],
+      });
+    }
+
+    // ラベル行の次の行から次セクション開始行の直前まで
+    for (let ri = rowIndex + 1; ri < nextRowIndex; ri++) {
+      const row = sheet.rows[ri];
+      const text = row
+        .map((c: { value: string }) => c.value?.trim() ?? "")
+        .filter(Boolean).join(" ").trim();
+      if (text) {
+        items.push({
+          text,
+          sourceTrace: [{ sourceType: "excel", fileName, sheetName: sheet.name, cellRange: row[0]?.address, quotedText: text, aiInterpretation: `${keyword}の項目`, confidence: 0.75 }],
+        });
+      }
+    }
+    result[keyword] = items;
+  }
+
+  return result;
+}
+
+// 後方互換のためのラッパー（外部から呼び出し可能）
+export function extractBulletItemsByKeyword(
+  sheet: SheetData,
+  fileName: string,
+  sectionKey: string
+): RichBulletItem[] {
+  const res = extractAllBulletSections(sheet, fileName);
+  return res[sectionKey] ?? [];
 }
