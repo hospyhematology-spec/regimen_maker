@@ -190,6 +190,7 @@ export function extractBulletItems(
 
 /**
  * 投与方法シートからAdministrationStep[]を抽出する
+ * A列の整数だけでなく、薬剤名や割ーな行パターンも認識する
  */
 export function extractAdministrationSteps(
   sheetData: SheetData,
@@ -200,12 +201,25 @@ export function extractAdministrationSteps(
   let currentStepNo: number | null = null;
   let currentRows: CellInfo[][] = [];
 
-  for (const row of sheetData.rows) {
+  // ヘッダー行を檢出する（最初の薬剤名や投与方法のある行の先行最大行）
+  const headerLabels = /薬剤名|芬剤|刹|投与|途|amount|dose|drug|route|day|基準|剥|負/i;
+  let headerRowIndex = 0;
+  for (let i = 0; i < Math.min(sheetData.rows.length, 10); i++) {
+    const rowStr = sheetData.rows[i].map((c: CellInfo) => c.value?.trim() ?? "").join(" ");
+    if (headerLabels.test(rowStr)) {
+      headerRowIndex = i;
+      break;
+    }
+  }
+
+  // データ行（ヘッダー行の次から）を処理
+  for (let ri = headerRowIndex + 1; ri < sheetData.rows.length; ri++) {
+    const row = sheetData.rows[ri];
     const firstCell = row[stepColIndex]?.value?.trim() ?? "";
     const stepNo = parseInt(firstCell, 10);
 
+    // A列に整数がある場合はステップ分割点
     if (!isNaN(stepNo) && firstCell === String(stepNo)) {
-      // 前のステップを確定
       if (currentStepNo !== null && currentRows.length > 0) {
         steps.push(buildStep(currentStepNo, currentRows, fileName, sheetData.name));
       }
@@ -213,6 +227,17 @@ export function extractAdministrationSteps(
       currentRows = [row];
     } else if (currentStepNo !== null) {
       currentRows.push(row);
+    } else {
+      // A列に整数がない場合、行全体に薬剤名らしき文字列があればステップとして扱う
+      const rowContent = row.map((c: CellInfo) => c.value?.trim() ?? "").filter(Boolean);
+      if (rowContent.length >= 2 && rowContent.some(v => !/^\.?\d+$/.test(v) && v.length > 1)) {
+        if (currentStepNo === null) {
+          currentStepNo = steps.length + 1;
+          currentRows = [row];
+        } else {
+          currentRows.push(row);
+        }
+      }
     }
   }
 
@@ -250,12 +275,17 @@ function buildStep(
 
     if (name) {
       const cat = category.toLowerCase();
-      if (cat.includes("主") || cat.includes("抗")) {
+      // 薬剤名があればカテゴリにおらず何らかの項目として登録する
+      if (cat.includes("主") || cat.includes("抗がん") || cat.includes("抗cancer") || cat === "" || cat.includes("薬")) {
+        // 主剤として登録
         mainDrugs.push({ drugName: name, dose: dose || null, doseUnit: unit || null });
-      } else if (cat.includes("溶") || cat.includes("補液") || cat.includes("前")) {
+      } else if (cat.includes("溶") || cat.includes("補液") || cat.includes("前") || cat.includes("溶解") || cat.includes("希釈") || cat.includes("生理")) {
         diluents.push({ name, volume: dose || null, unit: unit || null });
       } else if (cat.includes("フラッシュ")) {
         flushes.push({ name, volume: dose || null, unit: unit || null });
+      } else {
+        // 分類不明は主剤扇いとして登録
+        mainDrugs.push({ drugName: name, dose: dose || null, doseUnit: unit || null });
       }
     }
     if (routeVal && !route) route = routeVal;

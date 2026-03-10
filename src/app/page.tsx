@@ -178,10 +178,24 @@ function UploadPage() {
 
         if (ext === ".xlsx" || ext === ".xls") {
           const sheetsData = await parseExcelFile(buffer);
-          // 最初のシートを基本情報シートと仮定して渡す
-          if (sheetsData.length > 0) {
-            const basicInfoPartial = extractBasicInfo(sheetsData[0], file.name);
-            combinedBasicInfo = { ...combinedBasicInfo, ...basicInfoPartial.value };
+
+          // 全シートから基本情報を抽出（最もマッチしたシートを優先）
+          // 「基本情報」シートとそれ以外で優先度分け
+          const basicInfoSheetFirst = [...sheetsData].sort((a, _b) => {
+            return /基本|表紙|概要|申請|cover/i.test(a.name) ? -1 : 1;
+          });
+          for (const sheet of basicInfoSheetFirst) {
+            const basicInfoPartial = extractBasicInfo(sheet, file.name);
+            // 未設定の項目のみ上書き（後のシートでは設定済みのものは変えない）
+            const merged: Partial<RegimenMaster["basicInfo"]> = {};
+            for (const key of Object.keys(basicInfoPartial.value) as (keyof typeof basicInfoPartial.value)[]) {
+              const existing = combinedBasicInfo[key];
+              const incoming = basicInfoPartial.value[key];
+              if (existing == null || (Array.isArray(existing) && existing.length === 0)) {
+                if (incoming !== undefined) (merged as Record<string, unknown>)[key] = incoming;
+              }
+            }
+            combinedBasicInfo = { ...combinedBasicInfo, ...merged };
           }
 
           const blocks = extractRegimenBlocks(sheetsData, file.name);

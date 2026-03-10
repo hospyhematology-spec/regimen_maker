@@ -112,14 +112,13 @@ export function extractBasicInfo(
     }
   }
 
-  // 箇条書き項目はシートの特定エリアから抽出（行範囲は実際のテンプレートに合わせる）
-  // ここでは仮の行範囲を使用
+  // 複数シートの場合、すべてのシートから箇条書き抽出を試みる
   const contraindications = extractBulletItemsFromRows(sheet, fileName, "禁忌");
-  const eligibilityCriteria = extractBulletItemsFromRows(sheet, fileName, "投与基準");
-  const stopCriteria = extractBulletItemsFromRows(sheet, fileName, "中止基準");
-  const doseReductionCriteria = extractBulletItemsFromRows(sheet, fileName, "減量基準");
-  const precautions = extractBulletItemsFromRows(sheet, fileName, "注意事項");
-  const popupNotes = extractBulletItemsFromRows(sheet, fileName, "ポップアップ");
+  const eligibilityCriteria = extractBulletItemsFromRows(sheet, fileName, "投与基準|適応基準|対象患者");
+  const stopCriteria = extractBulletItemsFromRows(sheet, fileName, "中止基準|投与中止");
+  const doseReductionCriteria = extractBulletItemsFromRows(sheet, fileName, "減量基準|用量調整");
+  const precautions = extractBulletItemsFromRows(sheet, fileName, "注意事項|注意点|管理");
+  const popupNotes = extractBulletItemsFromRows(sheet, fileName, "ポップアップ|コメント|注記");
 
   const basicInfo: Partial<BasicInfo> = {
     applicationDate,
@@ -144,6 +143,7 @@ export function extractBasicInfo(
 
 /**
  * シートの行から特定ラベルに続く箇条書き領域を抽出する
+ * A列だけでなく全セルをスキャンしてラベルを検索する
  */
 function extractBulletItemsFromRows(
   sheet: SheetData,
@@ -152,19 +152,45 @@ function extractBulletItemsFromRows(
 ): RichBulletItem[] {
   const items: RichBulletItem[] = [];
   let capturing = false;
+  const regex = new RegExp(labelKeyword);
 
   for (const row of sheet.rows) {
+    // 行のすべてのセルを連結してラベル検索
+    const rowText = row.map((c: { value: string }) => c.value?.trim() ?? "").join(" ");
     const firstCell = row[0]?.value?.trim() ?? "";
-    if (firstCell.includes(labelKeyword)) {
+
+    // ラベルが行内のどこかに含まれていればキャプチャ開始
+    if (regex.test(rowText)) {
       capturing = true;
+      // ラベル行自体にもデータがある場合は取り込む（右隣セルの内容）
+      const dataInLabelRow = row.slice(1).map((c: { value: string }) => c.value?.trim() ?? "").filter(Boolean).join(" ");
+      if (dataInLabelRow) {
+        items.push({
+          text: dataInLabelRow,
+          sourceTrace: [{
+            sourceType: "excel",
+            fileName,
+            sheetName: sheet.name,
+            cellRange: row[0]?.address,
+            quotedText: dataInLabelRow,
+            aiInterpretation: `${labelKeyword}の項目`,
+            confidence: 0.8,
+          }],
+        });
+      }
       continue;
     }
-    // 次のラベルに到達したら停止
-    if (capturing && firstCell && /^[^\s]/.test(firstCell) && !firstCell.startsWith("・") && !firstCell.startsWith("　")) {
-      capturing = false;
+
+    // 別ラベル行（先頭が空白なしで始まりA列に内容あり）に到達したら停止
+    if (capturing && firstCell && /^[^\s・　]/.test(firstCell) && !/^\d/.test(firstCell)) {
+      // ただし次のラベル行かどうかをある程度判断する（短い行ラベルと思われる場合のみ停止）
+      if (firstCell.length < 15 && !firstCell.includes("。")) {
+        capturing = false;
+      }
     }
+
     if (capturing) {
-      const text = row.map((c: { value: string }) => c.value).join("").trim();
+      const text = row.map((c: { value: string }) => c.value?.trim() ?? "").filter(Boolean).join(" ").trim();
       if (text) {
         items.push({
           text,
